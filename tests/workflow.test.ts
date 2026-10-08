@@ -1,0 +1,35 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+process.env.GRANTD_DATA_DIR = mkdtempSync(path.join(tmpdir(),'grantd-test-'));
+const {createOpportunity,saveExtraction,requirements,reviewRequirement,opportunity} = await import('../src/persistence/repository');
+const {parser} = await import('../src/services/parser');
+const {db} = await import('../src/persistence/db');
+test('persistent creation, proposed extraction, review, routing, and immutable provenance',async()=>{
+  const id = createOpportunity('Arts initiative','Community foundation','2027-02-01');
+  assert.equal(opportunity(id)?.status,'draft');
+  const extracted = await parser.extract({bytes:new Uint8Array(),filename:'guide.txt',mimeType:'text/plain'});
+  saveExtraction(id,{id:'doc-1',filename:'guide.txt',mime_type:'text/plain',storage_key:'doc-1',parser:parser.identity},extracted);
+  const initial = requirements(id); assert.equal(initial.length,3); assert.ok(initial.every(r=>r.review_state==='Proposed')); assert.equal(opportunity(id)?.status,'application');
+  reviewRequirement(id,initial[0].id,'accept',new FormData()); assert.equal(requirements(id)[0].review_state,'Accepted');
+  const form = new FormData(); for (const [key,value] of Object.entries({text:'Provide approved budget',category:'Organizational budget',department:'Programs',owner:'program-user',due_date:'2027-01-01',status:'Waiting',notes:'Confirm with finance'})) form.set(key,value);
+  reviewRequirement(id,initial[0].id,'edit',form);
+  const edited = requirements(id)[0]; assert.equal(edited.review_state,'Edited'); assert.equal(edited.owner_id,'program-user'); assert.equal(edited.department,'Programs'); assert.equal(edited.source_excerpt,initial[0].source_excerpt); assert.equal(edited.original_suggestion,initial[0].original_suggestion);
+  reviewRequirement(id,initial[1].id,'reject',new FormData()); assert.equal(requirements(id)[1].review_state,'Rejected');
+  assert.equal(db().prepare('SELECT count(*) count FROM review_event').get()?.count,3);
+  form.set('owner','foreign-user'); assert.throws(()=>reviewRequirement(id,initial[0].id,'edit',form),/Owner/); assert.equal(requirements(id)[0].owner_id,'program-user');
+});
+test('validates dates and required fields',()=>{assert.throws(()=>createOpportunity('','Funder',''));assert.throws(()=>createOpportunity('Title','Funder','2027-02-30'));});
+test('unverified award conditions cannot become active obligations',()=>{
+ const id=createOpportunity('Award candidate','Funder','');
+ db().prepare('INSERT INTO source_document(id,opportunity_id,filename,mime_type,storage_key,parser) VALUES (?,?,?,?,?,?)').run('award-doc',id,'award.txt','text/plain','award-doc','mock');
+ db().prepare('INSERT INTO award(id,opportunity_id) VALUES (?,?)').run('award-1',id);
+ db().prepare('INSERT INTO award_condition(id,award_id,source_document_id,text,category,source_excerpt) VALUES (?,?,?,?,?,?)').run('condition-1','award-1','award-doc','Final report','Reporting','Submit final report');
+ const insert=db().prepare('INSERT INTO obligation(id,award_id,condition_id,text,category,verified_by,verified_at) VALUES (?,?,?,?,?,?,?)');
+ assert.throws(()=>insert.run('obligation-1','award-1','condition-1','Final report','Reporting','demo-user','2027-01-01'),/verified/);
+ db().prepare("UPDATE award_condition SET review_state='Accepted' WHERE id=?").run('condition-1');
+ insert.run('obligation-1','award-1','condition-1','Final report','Reporting','demo-user','2027-01-01');
+ assert.equal(db().prepare('SELECT count(*) count FROM obligation').get()?.count,1);
+});

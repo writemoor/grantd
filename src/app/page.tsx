@@ -1,0 +1,6 @@
+import Link from 'next/link';
+import { opportunities, requirements } from '../persistence/repository';
+export default function Home() {
+  const items = opportunities(); const all = items.flatMap(o=>requirements(o.id));
+  return <><h1>Your grant workspace</h1><p>Know what the funder needs, and who needs to provide it.</p><div className="metrics"><section><strong>{items.length}</strong> Opportunities</section><section><strong>{all.filter(r=>r.review_state==='Proposed').length}</strong> Suggestions awaiting review</section><section><strong>{all.filter(r=>['Accepted','Edited'].includes(r.review_state) && !r.owner_id).length}</strong> Confirmed items without an owner</section></div><section className="panel"><h2>Start with an application</h2><p>Create an opportunity, upload its guidelines, and review a small sample checklist. Your uploaded content is retained but is not analyzed by the mock parser.</p><Link className="button" href="/opportunities">View opportunities / create new</Link></section><h2>Recent opportunities</h2>{items.length ? <ul>{items.slice(0,5).map(o=><li key={o.id}><Link href={`/opportunities/${o.id}`}>{o.title}</Link> · {o.funder_name}</li>)}</ul> : <p>No opportunities yet. Create your first one to begin.</p>}</>;
+}
